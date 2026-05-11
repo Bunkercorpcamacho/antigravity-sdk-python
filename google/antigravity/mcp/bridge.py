@@ -20,6 +20,7 @@ from mcp.client import stdio
 from mcp.client.session_group import ClientSessionGroup
 from mcp.client.session_group import SseServerParameters
 from mcp.client.session_group import StreamableHttpParameters
+from google.antigravity import types
 from google.antigravity.tools.tool_runner import ToolRunner
 from google.antigravity.tools.tool_runner import ToolWithSchema
 
@@ -61,6 +62,23 @@ class McpBridge:
   def __init__(self):
     self.session_group = None
     self.tools: list[ToolWithSchema] = []
+
+  async def connect(self, server_cfg: types.McpServerConfig):
+    """Connects to an MCP server based on its configuration."""
+    if server_cfg.type == "stdio":
+      await self.connect_stdio(server_cfg.command, server_cfg.args)
+    elif server_cfg.type == "sse":
+      await self.connect_sse(server_cfg.url, server_cfg.headers)
+    elif server_cfg.type == "http":
+      await self.connect_streamable_http(
+          url=server_cfg.url,
+          headers=server_cfg.headers,
+          timeout=server_cfg.timeout,
+          sse_read_timeout=server_cfg.sse_read_timeout,
+          terminate_on_close=server_cfg.terminate_on_close,
+      )
+    else:
+      raise ValueError(f"Unsupported MCP server type: {server_cfg.type}")
 
   async def connect_stdio(self, command: str, args: list[str]):
     """Connects to a local MCP server over stdio."""

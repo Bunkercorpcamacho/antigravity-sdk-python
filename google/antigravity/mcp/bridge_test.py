@@ -21,6 +21,7 @@ from mcp import types
 from mcp.client.session_group import ClientSessionGroup
 from google.antigravity.mcp.bridge import get_mcp_tools
 from google.antigravity.mcp.bridge import McpBridge
+from google.antigravity.tools.tool_runner import ToolRunner
 
 
 class TestBridge(unittest.TestCase):
@@ -135,6 +136,49 @@ class TestMcpBridge(unittest.TestCase):
 
       asyncio.run(run_test())
 
+  def test_connect(self):
+    """Verifies that connect correctly dispatches to specific methods."""
+    bridge = McpBridge()
+    
+    bridge.connect_stdio = mock.AsyncMock()
+    bridge.connect_sse = mock.AsyncMock()
+    bridge.connect_streamable_http = mock.AsyncMock()
+
+    async def run_test():
+      # Test stdio
+      stdio_cfg = mock.MagicMock()
+      stdio_cfg.type = "stdio"
+      stdio_cfg.command = "cmd"
+      stdio_cfg.args = ["arg"]
+      await bridge.connect(stdio_cfg)
+      bridge.connect_stdio.assert_called_once_with("cmd", ["arg"])
+
+      # Test sse
+      sse_cfg = mock.MagicMock()
+      sse_cfg.type = "sse"
+      sse_cfg.url = "url"
+      sse_cfg.headers = {"h": "v"}
+      await bridge.connect(sse_cfg)
+      bridge.connect_sse.assert_called_once_with("url", {"h": "v"})
+
+      # Test http
+      http_cfg = mock.MagicMock()
+      http_cfg.type = "http"
+      http_cfg.url = "url2"
+      http_cfg.headers = None
+      http_cfg.timeout = 10.0
+      http_cfg.sse_read_timeout = 20.0
+      http_cfg.terminate_on_close = False
+      await bridge.connect(http_cfg)
+      bridge.connect_streamable_http.assert_called_once_with(
+          url="url2",
+          headers=None,
+          timeout=10.0,
+          sse_read_timeout=20.0,
+          terminate_on_close=False,
+      )
+
+    asyncio.run(run_test())
   def test_stop(self):
     """Verifies that McpBridge stopped safely exiting ClientSessionGroup contexts."""
     bridge = McpBridge()

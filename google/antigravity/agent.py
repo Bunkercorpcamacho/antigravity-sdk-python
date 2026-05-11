@@ -127,22 +127,7 @@ class Agent:
         logging.info("Connecting to MCP servers...")
         self._mcp_bridge = bridge.McpBridge()
         for server_cfg in self._config.mcp_servers:
-          if server_cfg.type == "stdio":
-            await self._mcp_bridge.connect_stdio(
-                server_cfg.command, server_cfg.args
-            )
-          elif server_cfg.type == "sse":
-            await self._mcp_bridge.connect_sse(
-                server_cfg.url, server_cfg.headers
-            )
-          elif server_cfg.type == "http":
-            await self._mcp_bridge.connect_streamable_http(
-                url=server_cfg.url,
-                headers=server_cfg.headers,
-                timeout=server_cfg.timeout,
-                sse_read_timeout=server_cfg.sse_read_timeout,
-                terminate_on_close=server_cfg.terminate_on_close,
-            )
+          await self._mcp_bridge.connect(server_cfg)
         all_tools.extend(self._mcp_bridge.tools)
 
       self._tool_runner = tool_runner.ToolRunner(tools=all_tools)

@@ -718,11 +718,8 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
     mock_strategy_instance.stop = mock.AsyncMock()
     mock_strategy_class.return_value = mock_strategy_instance
 
-    mock_bridge_instance = mock.AsyncMock()
-    mock_bridge_instance.__aenter__.return_value = mock_bridge_instance
-    mock_bridge_instance.connect_stdio = mock.AsyncMock()
-    mock_bridge_instance.connect_sse = mock.AsyncMock()
-    mock_bridge_instance.connect_streamable_http = mock.AsyncMock()
+    mock_bridge_instance = mock.MagicMock()
+    mock_bridge_instance.connect = mock.AsyncMock()
     mock_bridge_instance.stop = mock.AsyncMock()
     mock_mcp_bridge.return_value = mock_bridge_instance
 
@@ -743,19 +740,12 @@ class AgentTest(unittest.IsolatedAsyncioTestCase):
     )
     async with agent.Agent(config) as ag:
       mock_mcp_bridge.assert_called_once_with()
-      mock_bridge_instance.connect_stdio.assert_called_once_with(
-          "python3", ["server.py"]
-      )
-      mock_bridge_instance.connect_sse.assert_called_once_with(
-          "http://localhost:8000/sse", None
-      )
-      mock_bridge_instance.connect_streamable_http.assert_called_once_with(
-          url="http://localhost:8000/http",
-          headers=None,
-          timeout=30.0,
-          sse_read_timeout=300.0,
-          terminate_on_close=True,
-      )
+      self.assertEqual(mock_bridge_instance.connect.call_count, 3)
+      mock_bridge_instance.connect.assert_has_calls([
+          mock.call(mcp_servers[0]),
+          mock.call(mcp_servers[1]),
+          mock.call(mcp_servers[2]),
+      ])
 
       _, kwargs = mock_strategy_class.call_args
       tool_runner_instance = kwargs.get("tool_runner")
