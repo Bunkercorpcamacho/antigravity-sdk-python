@@ -440,10 +440,6 @@ class LocalConnection(connection.Connection):
         _PendingCallKey, _PendingCallValue
     ] = {}
 
-    # Dispatch session start hook.
-    if self._hook_runner and self._hook_runner.on_session_start_hooks:
-      self._run_in_background(self._hook_runner.dispatch_session_start())
-
   @property
   def is_idle(self) -> bool:
     """Returns True if the connection is idle and ready for input."""
@@ -1452,6 +1448,11 @@ class LocalConnectionStrategy(connection.ConnectionStrategy):
         hook_runner=self._hook_runner,
     )
     self._connection._start_stderr_reader(process.stderr)
+
+    # Dispatch session-start hook synchronously so it completes before
+    # any send() / dispatch_pre_turn() call.
+    if self._hook_runner and self._hook_runner.on_session_start_hooks:
+      await self._hook_runner.dispatch_session_start()
 
   async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
     """Tears down the backend and releases all resources."""

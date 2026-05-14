@@ -17,6 +17,7 @@
 import asyncio
 import io
 import json
+import struct
 import subprocess
 import unittest
 from unittest import mock
@@ -1670,29 +1671,66 @@ class LocalConnectionSessionHooksTest(unittest.IsolatedAsyncioTestCase):
     self.mock_process = mock.MagicMock()
     self.tool_runner = tool_runner.ToolRunner()
 
-  async def test_session_start_hook_dispatched_on_init(self):
-    """Verifies OnSessionStartHook fires when LocalConnection is created."""
+  @mock.patch.dict("os.environ", {"GEMINI_API_KEY": "test-key"}, clear=True)
+  @mock.patch(
+      "google.antigravity.connections.local"
+      ".local_connection._get_default_binary_path",
+      return_value="/fake/binary",
+  )
+  @mock.patch(
+      "google.antigravity.connections.local"
+      ".local_connection.websockets.connect",
+      new_callable=mock.AsyncMock,
+  )
+  @mock.patch("subprocess.Popen")
+  async def test_strategy_dispatches_session_start(
+      self, mock_popen, mock_ws_connect, mock_binary_path  # pylint: disable=unused-argument
+  ):
+    """Verifies the strategy dispatches session-start hooks during __aenter__.
+
+    Why: The session-start hook must be dispatched by the SDK automatically,
+    not manually by the caller. If dispatch_session_start is removed from
+    the strategy, this test fails.
+    How: Go through LocalConnectionStrategy.__aenter__ with mocked
+    subprocess/websocket, spy on dispatch_session_start via mock.patch.object,
+    and assert it was called exactly once.
+    """
+    # Set up mock process to return a valid OutputConfig.
+    output_config = localharness_pb2.OutputConfig(port=12345, api_key="k")
+    serialized = output_config.SerializeToString()
+    length_prefix = struct.pack("<I", len(serialized))
+
+    mock_proc = mock.MagicMock()
+    mock_proc.stdin = mock.MagicMock()
+    mock_proc.stdout = mock.MagicMock()
+    mock_proc.stderr = mock.MagicMock()
+    mock_proc.stdout.read.side_effect = [length_prefix, serialized]
+    mock_popen.return_value = mock_proc
+
+    # Set up mock websocket.
+    mock_ws = mock.AsyncMock()
+    mock_ws.__aiter__ = mock.MagicMock(return_value=mock.AsyncMock())
+    mock_ws_connect.return_value = mock_ws
+
     called = []
-    event = asyncio.Event()
 
     class SessionStartHook(hooks_base.OnSessionStartHook):
 
-      async def run(self, context: hooks_base.HookContext, data: None):  # pylint: disable=unused-argument
+      async def run(self, context, data):  # pylint: disable=unused-argument
         called.append("started")
-        event.set()
 
     hr = hook_runner.HookRunner()
     hr.register_hook(SessionStartHook())
 
-    harness = test_utils.TestLocalHarness(
-        test_case=self,
-        process=self.mock_process,
-        tool_runner=self.tool_runner,
+    strategy = local_connection.LocalConnectionStrategy(
         hook_runner=hr,
     )
 
-    await asyncio.wait_for(event.wait(), timeout=1.0)
-    self.assertEqual(called, ["started"])
+    await strategy.__aenter__()
+    try:
+      self.assertEqual(called, ["started"])
+    finally:
+      await strategy.__aexit__(None, None, None)
 
   async def test_session_end_hook_dispatched_on_disconnect(self):
     """Verifies OnSessionEndHook fires when disconnect() is called."""
