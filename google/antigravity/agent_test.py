@@ -889,12 +889,15 @@ class AgentConfigTest(unittest.TestCase):
     self.assertEqual(shared.models.default.name, types.DEFAULT_MODEL)
 
   def test_defaults(self):
-    """Verifies AgentConfig defaults: permissive capabilities, default model."""
+    """Verifies AgentConfig defaults: safe policies, default model."""
     config = local_connection.LocalAgentConfig(system_instructions="test")
     self.assertIsNone(config.capabilities.enabled_tools)
-    self.assertEqual(len(config.policies), 1)
-    self.assertEqual(config.policies[0].tool, "*")
-    self.assertEqual(config.policies[0].decision, policy.Decision.APPROVE)
+    # Default is confirm_run_command(): deny(run_command) + allow(*).
+    self.assertEqual(len(config.policies), 2)
+    self.assertEqual(config.policies[0].tool, "run_command")
+    self.assertEqual(config.policies[0].decision, policy.Decision.DENY)
+    self.assertEqual(config.policies[1].tool, "*")
+    self.assertEqual(config.policies[1].decision, policy.Decision.APPROVE)
     self.assertEqual(
         config.gemini_config.models.default.name, types.DEFAULT_MODEL
     )

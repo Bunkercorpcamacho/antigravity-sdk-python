@@ -23,6 +23,13 @@ a priority-based model where specificity and safety determine precedence:
 
 Within each priority group, first match wins, enabling short-circuit evaluation.
 
+Default Behavior:
+
+  ``LocalAgentConfig`` uses ``confirm_run_command()`` as its default policy.
+  This denies ``run_command`` (the most dangerous tool) while allowing all
+  other tools.  To enable autonomous shell access, explicitly pass
+  ``policies=[policy.allow_all()]``.
+
 Policy Denial vs. Disabling Tools:
 
   Policies operate at the hook layer: a denied tool is still *visible* to the
@@ -64,14 +71,13 @@ import dataclasses
 import enum
 import inspect
 import logging
+import os
 from typing import Any
 
 import pydantic
 
 from google.antigravity import types
 from google.antigravity.hooks import hooks
-
-
 
 
 _logger = logging.getLogger(__name__)
@@ -227,6 +233,86 @@ def deny_all() -> Policy:
     A Policy that denies every tool call.
   """
   return deny(_WILDCARD, name="deny_all")
+
+
+def confirm_run_command(
+    handler: AskUserHandler | None = None,
+) -> list[Policy]:
+  """Safe default: allows all tools, denies or confirms run_command.
+
+  When no handler is given, ``run_command`` is denied outright — the agent
+  sees the tool but calls are rejected with a clear message explaining
+  how to enable it.  When a handler is given, ``run_command`` calls
+  trigger an ASK_USER flow instead.
+
+  All other tools (file read/write, subagents, image generation, etc.)
+  are allowed.
+
+  This is the default policy for ``LocalAgentConfig``.
+
+  Args:
+    handler: Optional handler for ASK_USER on run_command. If None, run_command
+      is denied.
+
+  Returns:
+    A list of Policies.
+  """
+  if handler is not None:
+    return [
+        ask_user(
+            types.BuiltinTools.RUN_COMMAND.value,
+            handler=handler,
+            name="confirm_run_command",
+        ),
+        allow(_WILDCARD, name="confirm_run_command"),
+    ]
+  return [
+      deny(types.BuiltinTools.RUN_COMMAND.value, name="confirm_run_command"),
+      allow(_WILDCARD, name="confirm_run_command"),
+  ]
+
+
+def workspace_only(workspaces: Sequence[str]) -> list[Policy]:
+  """Restricts file tools to the given workspace directories.
+
+  File read/write/create operations targeting paths outside any of the
+  configured workspace directories are denied.  Other tools are
+  unaffected.
+
+  Args:
+    workspaces: Absolute paths of allowed workspace directories.
+
+  Returns:
+    A list of Policies.
+  """
+  abs_workspaces = [os.path.abspath(ws) for ws in workspaces]
+
+  file_tools = [t.value for t in types.BuiltinTools.file_tools()]
+
+  def _outside_workspace(args: dict[str, Any]) -> bool:
+    """Returns True when the target path is outside all workspaces."""
+    path = (
+        args.get("path")
+        or args.get("file_path")
+        or args.get("TargetFile")
+        or args.get("directory_path")
+        or ""
+    )
+    if not path:
+      # No path argument found — allow the call so we don't break
+      # tool calls that happen to omit paths (e.g. list_directory
+      # with no args uses cwd).
+      return False
+    abs_path = os.path.abspath(path)
+    return not any(
+        abs_path == ws or abs_path.startswith(ws + os.sep)
+        for ws in abs_workspaces
+    )
+
+  return [
+      deny(tool, when=_outside_workspace, name="workspace_only")
+      for tool in file_tools
+  ]
 
 
 # ---------------------------------------------------------------------------

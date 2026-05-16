@@ -283,6 +283,22 @@ class BuiltinTools(str, enum.Enum):
     return list(cls)
 
   @classmethod
+  def file_tools(cls) -> list["BuiltinTools"]:
+    """Returns tools that perform file read/write/create operations.
+
+    These tools accept a file path argument and can be scoped to specific
+    workspace directories via ``policy.workspace_only()``.
+
+    Returns:
+        A list of file-operation BuiltinTools.
+    """
+    return [
+        cls.VIEW_FILE,
+        cls.CREATE_FILE,
+        cls.EDIT_FILE,
+    ]
+
+  @classmethod
   def none(cls) -> list["BuiltinTools"]:
     """Returns an empty tool list (no builtin tools).
 

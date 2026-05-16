@@ -277,6 +277,36 @@ class AskUserHandlerTest(unittest.TestCase):
     self.assertFalse(result)
 
 
+class UpgradeToInteractiveConfirmationTest(unittest.IsolatedAsyncioTestCase):
+  """Tests for _upgrade_to_interactive_confirmation."""
+
+  @mock.patch(
+      "google.antigravity.connections."
+      "local.local_connection.LocalConnectionStrategy"
+  )
+  async def test_upgrade_replaces_hook_not_appends(self, mock_strategy_class):
+    """Verifies the upgrade replaces the existing policy hook in-place.
+
+    What: Starts an agent with default confirm_run_command() policies, then
+          calls _upgrade_to_interactive_confirmation.
+    Why: The old code appended a new hook, but the original deny hook fired
+         first and short-circuited. The fix must replace it.
+    How: Counts pre_tool_call_decide_hooks before and after upgrade and
+         asserts the count stays the same (replaced, not appended).
+    """
+    mock_strategy_instance = mock.MagicMock()
+    mock_strategy_instance.stop = mock.AsyncMock()
+    mock_strategy_class.return_value = mock_strategy_instance
+
+    config = local_connection.LocalAgentConfig(system_instructions="test")
+    async with agent.Agent(config) as ag:
+      hooks_before = len(ag._hook_runner._pre_tool_call_decide_hooks)
+      interactive._upgrade_to_interactive_confirmation(ag)
+      hooks_after = len(ag._hook_runner._pre_tool_call_decide_hooks)
+      self.assertEqual(hooks_before, hooks_after,
+                       "Upgrade should replace the hook, not append a new one")
+
+
 class RunInteractiveLoopTest(unittest.IsolatedAsyncioTestCase):
   """Tests for run_interactive_loop."""
 

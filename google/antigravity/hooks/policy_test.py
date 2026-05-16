@@ -589,5 +589,181 @@ class SafeDefaultsTest(unittest.IsolatedAsyncioTestCase):
     self.assertTrue(handler_called)
 
 
+class ConfirmCommandsTest(unittest.IsolatedAsyncioTestCase):
+  """Verifies the confirm_run_command() preset — the default for LocalAgentConfig.
+
+  confirm_run_command() is the safe-by-default policy: it denies run_command
+  while allowing all other tools.  When a handler is provided, run_command
+  is upgraded to ASK_USER instead of DENY.
+  """
+
+  async def test_denies_run_command_by_default(self):
+    """Without a handler, run_command is denied with a clear message."""
+    policies = policy.confirm_run_command()
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(ctx, _make_tool_call("run_command"))
+    self.assertFalse(result.allow)
+    self.assertIn("confirm_run_command", result.message)
+
+  async def test_allows_other_tools_by_default(self):
+    """Without a handler, all non-run_command tools are allowed."""
+    policies = policy.confirm_run_command()
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    for tool in types.BuiltinTools:
+      if tool == types.BuiltinTools.RUN_COMMAND:
+        continue
+      result = await hook.run(ctx, _make_tool_call(tool.value))
+      self.assertTrue(result.allow, f"{tool.value} should be allowed")
+
+  async def test_with_handler_asks_user_for_run_command(self):
+    """With a handler, run_command triggers ASK_USER instead of DENY."""
+    handler_calls = []
+
+    def handler(tc: types.ToolCall) -> bool:
+      handler_calls.append(tc)
+      return True
+
+    policies = policy.confirm_run_command(handler=handler)
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(ctx, _make_tool_call("run_command"))
+    self.assertTrue(result.allow)
+    self.assertEqual(len(handler_calls), 1)
+
+  async def test_with_handler_deny_propagates(self):
+    """Handler returning False denies the tool call."""
+    policies = policy.confirm_run_command(handler=lambda tc: False)
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(ctx, _make_tool_call("run_command"))
+    self.assertFalse(result.allow)
+    self.assertIn("User denied", result.message)
+
+  async def test_with_handler_allows_other_tools(self):
+    """With a handler, non-run_command tools are still auto-allowed."""
+    policies = policy.confirm_run_command(handler=lambda tc: False)
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(ctx, _make_tool_call("view_file"))
+    self.assertTrue(result.allow)
+
+  def test_returns_list_of_policies(self):
+    """confirm_run_command() always returns a list of Policy objects."""
+    for policies in (
+        policy.confirm_run_command(),
+        policy.confirm_run_command(handler=lambda tc: True),
+    ):
+      self.assertIsInstance(policies, list)
+      self.assertGreaterEqual(len(policies), 2)
+      for p in policies:
+        self.assertIsInstance(p, policy.Policy)
+
+
+class WorkspaceOnlyTest(unittest.IsolatedAsyncioTestCase):
+  """Verifies workspace_only() — restricts file tools to workspace dirs.
+
+  File tools targeting paths outside configured workspaces are denied.
+  Non-file tools and calls without path arguments are unaffected.
+  """
+
+  async def test_allows_files_inside_workspace(self):
+    """File tool with path inside workspace is allowed."""
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(
+        ctx, _make_tool_call("view_file", path="/tmp/workspace/foo.py")
+    )
+    self.assertTrue(result.allow)
+
+  async def test_denies_files_outside_workspace(self):
+    """File tool with path outside workspace is denied."""
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(
+        ctx, _make_tool_call("view_file", path="/etc/secrets/key.pem")
+    )
+    self.assertFalse(result.allow)
+    self.assertIn("workspace_only", result.message)
+
+  async def test_denies_create_outside_workspace(self):
+    """create_file outside workspace is denied."""
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(
+        ctx, _make_tool_call("create_file", TargetFile="/etc/malicious.sh")
+    )
+    self.assertFalse(result.allow)
+
+  async def test_denies_edit_outside_workspace(self):
+    """edit_file outside workspace is denied."""
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(
+        ctx, _make_tool_call("edit_file", file_path="/etc/passwd")
+    )
+    self.assertFalse(result.allow)
+
+  async def test_allows_non_file_tools(self):
+    """Non-file tools are unaffected — no matching policy, default allows."""
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(ctx, _make_tool_call("run_command"))
+    self.assertTrue(result.allow)
+
+  async def test_allows_when_no_path_arg(self):
+    """File tool with no path argument is allowed (don't break edge cases)."""
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    # A view_file call with no path arg — the predicate returns False,
+    # so the deny policy doesn't match and the call is allowed.
+    result = await hook.run(ctx, _make_tool_call("view_file"))
+    self.assertTrue(result.allow)
+
+  async def test_multiple_workspaces(self):
+    """Paths in any configured workspace are allowed."""
+    policies = policy.workspace_only(["/tmp/ws1", "/tmp/ws2"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(
+        ctx, _make_tool_call("view_file", path="/tmp/ws1/a.py")
+    )
+    self.assertTrue(result.allow)
+    result = await hook.run(
+        ctx, _make_tool_call("view_file", path="/tmp/ws2/b.py")
+    )
+    self.assertTrue(result.allow)
+
+  async def test_prevents_path_prefix_attack(self):
+    """Path /workspace-evil/file.txt must NOT match workspace /workspace.
+
+    Uses os.sep boundary check to prevent prefix-based traversal.
+    """
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(
+        ctx, _make_tool_call("view_file", path="/tmp/workspace-evil/file.txt")
+    )
+    self.assertFalse(result.allow)
+
+  async def test_exact_workspace_path_allowed(self):
+    """A path that is exactly the workspace directory itself is allowed."""
+    policies = policy.workspace_only(["/tmp/workspace"])
+    hook = policy.enforce(policies)
+    ctx = hooks.HookContext()
+    result = await hook.run(
+        ctx, _make_tool_call("view_file", path="/tmp/workspace")
+    )
+    self.assertTrue(result.allow)
+
+
 if __name__ == "__main__":
   unittest.main()

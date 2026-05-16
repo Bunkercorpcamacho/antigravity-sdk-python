@@ -9,14 +9,39 @@ The Google Antigravity SDK provides a declarative policy system to control which
 tools an agent can execute. Policies are evaluated using a priority-based model
 to ensure safety and prevent unauthorized actions.
 
-## Mandatory Requirement
+## Default Behavior
 
-> [!IMPORTANT] When **write tools** or **MCP servers** are enabled, you **MUST**
-> specify a safety policy or register a custom `PreToolCallDecideHook`. Failing
-> to do so will result in a `ValueError` at agent startup.
+By default, `LocalAgentConfig` uses `policy.confirm_run_command()` which:
 
-Write tools are any tools that are not read-only (e.g., `view_file` is
-read-only, but `run_command` and `write_to_file` are not).
+-   **Denies** `run_command` (shell execution is blocked)
+-   **Allows** all other tools (view, edit, create files, etc.)
+
+This means new agents are **conservative by default** — they cannot execute shell
+commands unless you explicitly opt in.
+
+If `workspaces` is set on the config, `policy.workspace_only()` is also
+automatically prepended, restricting file tools (`view_file`, `create_file`,
+`edit_file`) to the configured workspace directories.
+
+### Interactive Sessions
+
+When using `run_interactive_loop()`, the default deny on `run_command` is
+automatically upgraded to `ask_user` — the user gets a y/n confirmation prompt
+instead of a hard denial.
+
+### Restoring Permissive Behavior
+
+To allow all tools (including `run_command`), pass `policy.allow_all()`:
+
+```python
+from google.antigravity import LocalAgentConfig
+from google.antigravity.hooks import policy
+
+config = LocalAgentConfig(
+    system_instructions="You are a helpful assistant.",
+    policies=[policy.allow_all()],
+)
+```
 
 ## Policy Resolution Order
 
@@ -79,6 +104,15 @@ policy.ask_user("run_command", handler=my_approval_handler)
 -   `policy.allow_all()`: Approves all tool calls. Equivalent to `allow("*")`.
 -   `policy.deny_all()`: Denies all tool calls. Equivalent to `deny("*")`.
 
+### Convenience Presets
+
+-   `policy.confirm_run_command()`: Denies `run_command`, allows everything else.
+    This is the **default** policy. Optionally accepts a `handler` to use
+    `ask_user` instead of `deny`.
+-   `policy.workspace_only(workspaces)`: Restricts `view_file`, `create_file`,
+    and `edit_file` to paths within the given workspace directories.
+    Automatically applied when `LocalAgentConfig.workspaces` is set.
+
 ## Predicates (Argument Checking)
 
 You can use the `when` parameter to restrict policies based on tool arguments.
@@ -101,7 +135,7 @@ policy.deny(
 
 ## Minimal Safe Templates
 
-### Deny by Default (Recommended)
+### Deny by Default (Recommended for Production)
 
 Start by denying everything and selectively allow safe tools.
 
@@ -123,7 +157,21 @@ config = LocalAgentConfig(
 )
 ```
 
-### Allow All (Dangerous)
+### Safe Default (No Configuration Needed)
+
+The default `confirm_run_command()` policy is suitable for most use cases. Simply
+create a config without specifying policies:
+
+```python
+from google.antigravity import Agent, LocalAgentConfig
+
+# run_command is denied, all other tools allowed
+config = LocalAgentConfig(
+    system_instructions="You are a helpful assistant.",
+)
+```
+
+### Allow All (Development Only)
 
 Use only for local development where safety is not a concern.
 

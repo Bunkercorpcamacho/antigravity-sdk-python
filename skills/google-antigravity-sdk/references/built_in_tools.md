@@ -1,8 +1,9 @@
 # Built-in Tools Reference
 
 In the `LocalAgentConfig` (used for local development), all built-in tools are
-**enabled** and **allowed** by default. This provides a frictionless developer
-experience on your local machine.
+**enabled** by default. However, `run_command` is **denied** by the default
+`confirm_run_command()` policy — all other tools are allowed. See
+[Safety Policies](safety_policies.md) to customize this behavior.
 
 The following table lists all built-in tools available in the SDK and their
 descriptions.

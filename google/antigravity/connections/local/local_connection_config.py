@@ -32,15 +32,19 @@ class LocalAgentConfig(connection.AgentConfig):
   This is the default config for the Agent class. It uses the
   Go-based localharness binary.
 
-  Unlike the base AgentConfig, LocalAgentConfig defaults to all tools enabled
-  with a permissive policy, since it runs on the developer's own machine.
+  By default, all tools are enabled but ``run_command`` is denied via
+  ``policy.confirm_run_command()``.  To enable fully autonomous execution
+  (including shell access), pass ``policies=[policy.allow_all()]``.
+
+  When ``workspaces`` are configured, file tools are automatically
+  restricted to those directories via ``policy.workspace_only()``.
   """
 
   capabilities: types.CapabilitiesConfig = pydantic.Field(
       default_factory=types.CapabilitiesConfig
   )
   policies: list[Any] = pydantic.Field(
-      default_factory=lambda: [policy.allow_all()]
+      default_factory=policy.confirm_run_command
   )
 
   gemini_config: types.GeminiConfig = pydantic.Field(
@@ -77,6 +81,18 @@ class LocalAgentConfig(connection.AgentConfig):
             "'gemini_config.api_key'. Use one or the other."
         )
       self.gemini_config.api_key = self.api_key
+    return self
+
+  @pydantic.model_validator(mode="after")
+  def _apply_workspace_policies(self) -> "LocalAgentConfig":
+    """Prepends workspace-scoping policies when workspaces are configured.
+
+    Always prepends — even when the user sets explicit policies — so that
+    file operations are always restricted to the configured workspaces.
+    Users who want truly unrestricted access should set ``workspaces=[]``.
+    """
+    if self.workspaces:
+      self.policies = policy.workspace_only(self.workspaces) + self.policies
     return self
 
   def create_strategy(

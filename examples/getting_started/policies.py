@@ -15,10 +15,11 @@
 """Example demonstrating tool call policies in Google Antigravity SDK.
 
 This example shows how to secure an agent using declarative tool call policies.
-By default, `LocalAgentConfig` uses a permissive `policy.allow_all()` posture
-to facilitate rapid local development. To secure an agent for production or
-untrusted environments, developers should override this default with explicit
-safety policies.
+By default, ``LocalAgentConfig`` uses ``policy.confirm_run_command()`` which denies
+``run_command`` and allows all other tools. To lock down further for production
+or untrusted environments, developers can override this default with explicit
+safety policies. To open up full access (including shell), pass
+``policies=[policy.allow_all()]``.
 
 Policies operate at the runtime decision layer: tools remain visible in the
 agent's context, but calls that violate policies are denied with an explanation,

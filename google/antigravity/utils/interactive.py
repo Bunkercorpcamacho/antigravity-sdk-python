@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 
 from google.antigravity import types
 from google.antigravity.hooks import hooks
+from google.antigravity.hooks import policy as policy_module
 from google.antigravity.types import QuestionResponse
 
 if TYPE_CHECKING:
@@ -189,12 +190,68 @@ class AskQuestionHook(hooks.OnInteractionHook):
     return hooks.QuestionHookResult(responses=responses)
 
 
+def _upgrade_to_interactive_confirmation(
+    agent: agent_module.Agent,
+) -> None:
+  """Upgrades run_command from DENY to ASK_USER for interactive sessions.
+
+  Scans the agent's registered policies for ``confirm_run_command``-style deny
+  rules on ``run_command`` and replaces them with ``ask_user`` rules wired
+  to the built-in ``ask_user_handler``.  This gives interactive users y/n
+  prompts instead of hard denials.
+
+  Args:
+    agent: A started Agent instance.
+  """
+  config = agent._config  # pylint: disable=protected-access
+  if not hasattr(config, "policies"):
+    return
+
+  upgraded = []
+  for p in config.policies:
+    if (
+        isinstance(p, policy_module.Policy)
+        and p.tool == types.BuiltinTools.RUN_COMMAND.value
+        and p.decision == policy_module.Decision.DENY
+        and p.when is None
+    ):
+      # Replace bare deny(run_command) with ask_user(run_command).
+      upgraded.append(
+          policy_module.ask_user(
+              types.BuiltinTools.RUN_COMMAND.value,
+              handler=ask_user_handler,
+              name=p.name or "interactive_confirm",
+          )
+      )
+    else:
+      upgraded.append(p)
+
+  config.policies = upgraded
+  # Replace the existing policy-enforce hook in the hook runner so
+  # the old deny hook doesn't fire first and short-circuit.
+  new_hook = policy_module.enforce(upgraded)
+  runner = agent._hook_runner  # pylint: disable=protected-access
+  assert runner is not None, "Agent must be started before upgrading policies."
+  hooks_list = runner._pre_tool_call_decide_hooks  # pylint: disable=protected-access  # pytype: disable=attribute-error
+  for i, h in enumerate(hooks_list):
+    if isinstance(h, policy_module._PolicyDecideHook):  # pylint: disable=protected-access
+      hooks_list[i] = new_hook
+      return
+  # No existing policy hook found; append as fallback.
+  hooks_list.append(new_hook)
+
+
 async def run_interactive_loop(agent: agent_module.Agent) -> None:
   """Runs an interactive CLI loop for debugging and development.
 
   Reads user input from stdin, sends it to the agent, and prints the
   agent's responses. Registers an ``AskQuestionHook`` so the agent can
   prompt the user with questions during execution.
+
+  For agents using the default ``confirm_run_command()`` policy, this
+  function automatically upgrades ``run_command`` from DENY to ASK_USER,
+  giving the interactive user y/n confirmation prompts instead of hard
+  denials.
 
   Type ``exit`` or ``quit`` to end the session. Ctrl+C also exits cleanly.
 
@@ -210,6 +267,8 @@ async def run_interactive_loop(agent: agent_module.Agent) -> None:
     )
 
   agent.register_hook(AskQuestionHook())
+  _upgrade_to_interactive_confirmation(agent)
+
   print("Starting interactive loop. Type 'exit' or 'quit' to end.")
   while True:
     try:

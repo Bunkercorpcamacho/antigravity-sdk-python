@@ -3181,17 +3181,49 @@ class LocalAgentConfigTest(unittest.TestCase):
         strategy._gemini_config.models.default.name, "gemini-2.5-pro"
     )
 
-  def test_permissive_defaults(self):
-    """LocalAgentConfig defaults to all tools and allow_all() policy."""
+  def test_safe_defaults(self):
+    """LocalAgentConfig defaults to confirm_run_command() — deny run_command."""
     config = local_connection_config.LocalAgentConfig(
         system_instructions="test",
     )
     self.assertIsNone(config.capabilities.enabled_tools)
     self.assertIsNone(config.capabilities.disabled_tools)
+    # confirm_run_command() produces 2 policies: deny(run_command) + allow(*)
+    self.assertEqual(len(config.policies), 2)
+    deny_policy = config.policies[0]
+    self.assertEqual(deny_policy.tool, "run_command")
+    self.assertEqual(deny_policy.decision, policy.Decision.DENY)
+    self.assertEqual(deny_policy.name, "confirm_run_command")
+    allow_policy = config.policies[1]
+    self.assertEqual(allow_policy.tool, "*")
+    self.assertEqual(allow_policy.decision, policy.Decision.APPROVE)
+
+  def test_workspace_policies_auto_prepended(self):
+    """workspace_only() policies are auto-prepended when workspaces are set."""
+    config = local_connection_config.LocalAgentConfig(
+        system_instructions="test",
+        workspaces=["/tmp/ws"],
+    )
+    # workspace_only produces 3 deny policies (view_file, create_file,
+    # edit_file), followed by the 2 confirm_run_command policies.
+    self.assertEqual(len(config.policies), 5)
+    # First 3 should be workspace_only deny policies for file tools.
+    for i in range(3):
+      self.assertEqual(config.policies[i].decision, policy.Decision.DENY)
+      self.assertEqual(config.policies[i].name, "workspace_only")
+    # Last 2 should be confirm_run_command.
+    self.assertEqual(config.policies[3].tool, "run_command")
+    self.assertEqual(config.policies[4].tool, "*")
+
+  def test_explicit_allow_all_overrides_default(self):
+    """Explicit allow_all() replaces the confirm_run_command default."""
+    config = local_connection_config.LocalAgentConfig(
+        system_instructions="test",
+        policies=[policy.allow_all()],
+    )
     self.assertEqual(len(config.policies), 1)
-    p = config.policies[0]
-    self.assertEqual(p.tool, "*")
-    self.assertEqual(p.decision, policy.Decision.APPROVE)
+    self.assertEqual(config.policies[0].tool, "*")
+    self.assertEqual(config.policies[0].decision, policy.Decision.APPROVE)
 
   def test_create_strategy_app_data_dir(self):
     config = local_connection_config.LocalAgentConfig(
