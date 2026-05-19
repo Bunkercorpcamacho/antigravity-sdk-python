@@ -3502,9 +3502,7 @@ class LocalAgentConfigWorkspaceTest(
       msg: str,
   ):
     # Create dynamic, hermetic temporary directory
-    temp_dir_path = pathlib.Path(
-        self.enter_context(tempfile.TemporaryDirectory())
-    )
+    temp_dir_path = pathlib.Path(self.create_tempdir().full_path)
 
     workspace_dir = temp_dir_path / "my_workspace"
     default_app_data_dir = temp_dir_path / "my_default_app_data"
@@ -3536,6 +3534,49 @@ class LocalAgentConfigWorkspaceTest(
       )
       res = await hook.run(ctx, tc)
       self.assertEqual(res.allow, expected_allowed, msg=msg)
+
+  async def test_workspace_policy_denies_symlink_traversal(self):
+    """Tests that the workspace scoping policy correctly blocks symlinks pointing outside."""
+    temp_dir_path = pathlib.Path(self.create_tempdir().full_path)
+
+    # Define safe workspace and unsafe outer target
+    workspace_dir = temp_dir_path / "my_workspace"
+    workspace_dir.mkdir(exist_ok=True)
+
+    outer_dir = temp_dir_path / "outer"
+    outer_dir.mkdir(exist_ok=True)
+    outer_file = outer_dir / "secret.txt"
+    outer_file.write_text("sensitive data")
+
+    # Create a symbolic link inside the workspace pointing to the outer file
+    symlink_path = workspace_dir / "escape_link.txt"
+    os.symlink(outer_file, symlink_path)
+
+    config = local_connection_config.LocalAgentConfig(
+        system_instructions="test",
+        workspaces=[str(workspace_dir)],
+        app_data_dir=None,
+    )
+
+    # workspace_only policies are the first 3
+    policies = config.policies[:3]
+    hook = policy.enforce(policies)
+    ctx = hooks_base.HookContext()
+
+    # Dispatch a tool call targeting the symlink path
+    tc = types.ToolCall(
+        name="view_file",
+        args={"path": str(symlink_path)},
+        canonical_path=str(symlink_path),
+    )
+    res = await hook.run(ctx, tc)
+
+    # Assert that the policy correctly resolves the symlink and BLOCKS the
+    # access
+    self.assertFalse(
+        res.allow,
+        msg="Workspace policy must resolve symlinks and block traversal",
+    )
 
 
 class LocalConnectionBuiltinToolHooksTest(unittest.IsolatedAsyncioTestCase):

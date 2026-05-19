@@ -69,11 +69,14 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import dataclasses
 import enum
+import functools
 import inspect
 import logging
 import os
+import pathlib
+import sys
 import typing
-from typing import Any
+from typing import Any, Union
 
 import pydantic
 
@@ -273,24 +276,82 @@ def confirm_run_command(
   ]
 
 
-def _normalize_path(path: str) -> str:
-  """Canonicalizes a path for workspace boundary comparison.
+PathOrStr = Union[str, os.PathLike[str]]
 
-  Args:
-    path: A filesystem path.
 
-  Returns:
-    An absolute, canonical filesystem path.
+def _secure_normalize_path(path: PathOrStr) -> pathlib.Path:
+  """Symmetrically canonicalizes paths, resolving symlinks and junctions.
+
+  Raises OSError if the path cannot be securely canonicalized (Fail-Closed).
   """
-  return os.path.abspath(path)
+  # We do NOT specify strict=True because new files to be created do not exist yet.
+  # Instead, we use resolve(strict=False) which resolves existing symlinks.
+  # We let OSErrors bubble up so the caller fails closed.
+  return pathlib.Path(path).resolve()
 
 
-def workspace_only(workspaces: Sequence[str]) -> list[Policy]:
+@functools.lru_cache(maxsize=256)
+def _is_case_insensitive(path: pathlib.Path) -> bool:
+  """Dynamically checks if the filesystem at the given path is case-insensitive.
+
+  Employs LRU caching to prevent excessive filesystem disk stats.
+  """
+  try:
+    if not path.exists():
+      return sys.platform in ("win32", "darwin")
+  except OSError:
+    return sys.platform in ("win32", "darwin")
+
+  parent = path.parent
+  name = path.name
+  if not name:
+    return sys.platform in ("win32", "darwin")
+
+  # Invert character casing to check if the OS resolves to the same file
+  swapped_name = "".join(c.swapcase() for c in name)
+  if swapped_name == name:
+    # No alphabetic characters in name — recursively probe parent directory
+    if parent and parent != path:
+      return _is_case_insensitive(parent)
+    return sys.platform in ("win32", "darwin")
+
+  try:
+    return path.samefile(parent / swapped_name)
+  except OSError:
+    return False
+
+
+def is_path_in_workspace(
+    target_path: PathOrStr, workspace_path: PathOrStr
+) -> bool:
+  """Returns True if the canonicalized target_path lies strictly within workspace_path."""
+  try:
+    norm_target = _secure_normalize_path(target_path)
+    norm_ws = _secure_normalize_path(workspace_path)
+  except OSError:
+    # Security Fallback: Fail-closed if normalization fails
+    return False
+
+  if _is_case_insensitive(norm_ws):
+    # Unicode-compliant case folding for robust case-insensitive matching
+    t_parts = [p.casefold() for p in norm_target.parts]
+    w_parts = [p.casefold() for p in norm_ws.parts]
+  else:
+    t_parts = list(norm_target.parts)
+    w_parts = list(norm_ws.parts)
+
+  if len(t_parts) < len(w_parts):
+    return False
+
+  # Structural containment comparison (avoids trailing separator slicing vulnerabilities)
+  return t_parts[: len(w_parts)] == w_parts
+
+
+def workspace_only(workspaces: Sequence[PathOrStr]) -> list[Policy]:
   """Restricts file tools to the given workspace directories.
 
   File read/write/create operations targeting paths outside any of the
-  configured workspace directories are denied.  Other tools are
-  unaffected.
+  configured workspace directories are denied. Other tools are unaffected.
 
   Args:
     workspaces: Absolute paths of allowed workspace directories.
@@ -298,23 +359,16 @@ def workspace_only(workspaces: Sequence[str]) -> list[Policy]:
   Returns:
     A list of Policies.
   """
-  abs_workspaces = [_normalize_path(ws) for ws in workspaces]
-
   file_tools = [t.value for t in types.BuiltinTools.file_tools()]
 
   def _outside_workspace(tc: types.ToolCall) -> bool:
     """Returns True when the target path is outside all workspaces."""
     path = tc.canonical_path or ""
     if not path:
-      # No path argument found — allow the call so we don't break
-      # tool calls that happen to omit paths (e.g. list_directory
-      # with no args uses cwd).
+      # Allow omit-path edge cases (e.g. list_dir with no args uses cwd)
       return False
-    abs_path = _normalize_path(path)
-    return not any(
-        abs_path == ws or abs_path.startswith(ws + os.sep)
-        for ws in abs_workspaces
-    )
+
+    return not any(is_path_in_workspace(path, ws) for ws in workspaces)
 
   return [
       deny(tool, when=_outside_workspace, name="workspace_only")

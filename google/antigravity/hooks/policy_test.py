@@ -26,9 +26,13 @@ Covers:
 """
 
 from collections.abc import Mapping
+import os
+import pathlib
+import sys
 from typing import Any
 import unittest
 
+from absl.testing import absltest
 import pydantic
 
 from google.antigravity import types
@@ -818,5 +822,77 @@ class WorkspaceOnlyTest(unittest.IsolatedAsyncioTestCase):
     self.assertTrue(result.allow)
 
 
+class PolicyPathScopingDirectTest(absltest.TestCase):
+  """Direct unit tests for path normalization and workspace scoping."""
+
+  def setUp(self):
+    super().setUp()
+    # Symmetrically resolve base directory using standard buildenv temp dirs
+    self.temp_dir_path = pathlib.Path(self.create_tempdir().full_path).resolve()
+
+  def test_secure_normalize_path_resolves_existing_symlinks(self):
+    """_secure_normalize_path must follow and resolve existing symlinks."""
+    # Create real folder and symlink pointing to it
+    real_dir = self.temp_dir_path / "real_dir"
+    real_dir.mkdir(exist_ok=True)
+    symlink_dir = self.temp_dir_path / "symlink_dir"
+
+    try:
+      os.symlink(real_dir, symlink_dir)
+    except OSError:
+      self.skipTest("Symbolic links are not supported in this environment.")
+
+    resolved_path = policy._secure_normalize_path(str(symlink_dir / "file.txt"))
+
+    # Assert that the symlinked parent was resolved to the canonical real_dir
+    self.assertEqual(resolved_path, real_dir / "file.txt")
+
+  def test_is_case_insensitive_prober(self):
+    """_is_case_insensitive must dynamically check OS filesystem case sensitivity."""
+    # Probe our active hermetic temp directory
+    is_ci = policy._is_case_insensitive(self.temp_dir_path)
+
+    # Validate platform expectations
+    expected_ci = sys.platform in ("win32", "darwin")
+    self.assertEqual(is_ci, expected_ci)
+
+  def test_is_path_in_workspace_structural_containment(self):
+    """is_path_in_workspace must securely check path containment component-wise."""
+    ws = self.temp_dir_path / "my_workspace"
+    ws.mkdir(exist_ok=True)
+
+    self.assertTrue(
+        policy.is_path_in_workspace(str(ws / "sub/file.txt"), str(ws))
+    )
+
+    self.assertTrue(policy.is_path_in_workspace(str(ws), str(ws)))
+
+    evil_ws = self.temp_dir_path / "my_workspace-evil"
+    self.assertFalse(
+        policy.is_path_in_workspace(str(evil_ws / "file.txt"), str(ws))
+    )
+
+    self.assertFalse(
+        policy.is_path_in_workspace(
+            str(self.temp_dir_path / "outside.txt"), str(ws)
+        )
+    )
+
+  def test_is_path_in_workspace_case_folding(self):
+    """is_path_in_workspace must fold casing symmetrically on case-insensitive drives."""
+    ws = self.temp_dir_path / "WorkspaceDir"
+    ws.mkdir(exist_ok=True)
+
+    # Query filesystem casing to verify case folding behavior
+    if policy._is_case_insensitive(ws):
+      # On case-insensitive APFS/Windows, lowercased paths must match
+      lower_target = str(ws).lower() + "/sub/file.txt"
+      self.assertTrue(policy.is_path_in_workspace(lower_target, str(ws)))
+    else:
+      # On case-sensitive EXT4 Linux, mismatched casing must be blocked
+      upper_target = str(ws).upper() + "/sub/file.txt"
+      self.assertFalse(policy.is_path_in_workspace(upper_target, str(ws)))
+
+
 if __name__ == "__main__":
-  unittest.main()
+  absltest.main()
