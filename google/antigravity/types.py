@@ -60,6 +60,7 @@ __all__ = [
     "AskQuestionEntry",
     "AskQuestionInteractionSpec",
     "AntigravityConnectionError",
+    "AntigravityCancelledError",
     "AntigravityValidationError",
     "AntigravityExecutionError",
     "TriggerDelivery",
@@ -710,6 +711,14 @@ class AntigravityConnectionError(Exception):
   """
 
 
+class AntigravityCancelledError(asyncio.CancelledError):
+  """Raised when an active turn is cancelled programmatically."""
+
+  def __init__(self, message: str = "The request was cancelled by the client."):
+    """Initializes the cancellation error with a default message."""
+    super().__init__(message)
+
+
 class AntigravityExecutionError(Exception):
   """Raised when the agent execution encounters a terminal error.
 
@@ -870,13 +879,14 @@ class ChatResponse:
               continue
             try:
               chunk = await self._chunk_stream.__anext__()
-              self._buffered_chunks.append(chunk)
             except StopAsyncIteration:
               self._is_done = True
-            except Exception as e:
+            except (asyncio.CancelledError, Exception) as e:
               self._is_done = True
               self._stream_error = e
               raise
+            else:
+              self._buffered_chunks.append(chunk)
 
     return _chunks_gen()
 
@@ -939,6 +949,15 @@ class ChatResponse:
   def usage_metadata(self) -> UsageMetadata | None:
     """Accumulated token usage across all model invocations in this turn."""
     return self._conversation.last_turn_usage
+
+  async def cancel(self) -> None:
+    """Cancels the active execution turn and halts generation.
+
+    This cleanly aborts the active stream on the backend. If the stream is
+    already completed, this method acts as a safe no-op.
+    """
+    if not self._is_done:
+      await self._conversation.cancel()
 
 
 # =============================================================================

@@ -832,18 +832,72 @@ class LocalConnectionTest(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(step_obj.status, types.StepStatus.WAITING_FOR_USER)
     self.assertEqual(step_obj.content, "Waiting for confirmation")
 
-  async def test_cancel(self):
-    """Verifies that cancel sends a halt request."""
+  async def test_cancel_e2e_raises_cancelled_error(self):
+    """Verifies programmatic cancel raises AntigravityCancelledError."""
     harness = test_utils.TestLocalHarness(
         test_case=self,
         process=self.mock_process,
         tool_runner=self.tool_runner,
     )
 
+    # Start the turn
+    await harness.conn.send("Hello")
+    init_data = await harness.wait_for_response()
+    self.assertEqual(init_data.get("userInput"), "Hello")
+
+    # Simulate an active generation step from the harness
+    event1 = localharness_pb2.OutputEvent(
+        step_update=localharness_pb2.StepUpdate(
+            cascade_id="my_cascade",
+            trajectory_id="my_cascade",
+            step_index=1,
+            state=localharness_pb2.StepUpdate.STATE_ACTIVE,
+            source=localharness_pb2.StepUpdate.SOURCE_MODEL,
+            text="I'm working",
+        )
+    )
+    await harness.send_event(event1)
+
+    # Consume the steps in a background task to capture yielded output
+    steps = []
+    receive_error = None
+
+    async def consume() -> None:
+      nonlocal receive_error
+      try:
+        async for step in harness.conn.receive_steps():
+          steps.append(step)
+      except asyncio.CancelledError as e:
+        receive_error = e
+
+    consume_task = asyncio.create_task(consume())
+
+    # Let the background consumer loop spin once
+    await asyncio.sleep(0.1)
+
+    # Programmatically cancel the turn
     await harness.conn.cancel()
 
+    # Verify that a halt_request was sent to the backend
     sent_data = await harness.wait_for_response()
     self.assertTrue(sent_data.get("haltRequest"))
+
+    # Simulate the harness transitioning to idle after halting
+    event2 = localharness_pb2.OutputEvent(
+        trajectory_state_update=localharness_pb2.TrajectoryStateUpdate(
+            trajectory_id="my_cascade",
+            state=localharness_pb2.TrajectoryStateUpdate.STATE_IDLE,
+        )
+    )
+    await harness.send_event(event2)
+
+    # Await background consumer task completion
+    await consume_task
+
+    # Verify yielded step and ensure AntigravityCancelledError propagates
+    self.assertEqual(len(steps), 1)
+    self.assertEqual(steps[0].content, "I'm working")
+    self.assertIsInstance(receive_error, types.AntigravityCancelledError)
 
   async def test_handle_tool_call_queues_step(self):
     """Tests ensuring _handle_tool_call manually queues the ToolCall step in _step_queue."""

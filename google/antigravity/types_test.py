@@ -19,6 +19,7 @@ and the AntigravityValidationError wrapper.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 import pathlib
 import tempfile
 import unittest
@@ -1267,6 +1268,55 @@ class ChatResponseStreamTest(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(usage.prompt_token_count, 10)
     self.assertEqual(usage.candidates_token_count, 20)
     self.assertEqual(usage.total_token_count, 30)
+
+  async def test_cancel_delegates_to_conversation(self):
+    """Verifies that cancel() delegates to conversation.cancel() if not done."""
+    async def mock_stream() -> AsyncIterator[types.StreamChunk]:
+      yield types.Text(step_index=1, text="hello")
+      # Keep it open by not ending or throwing yet
+
+    mock_conv = mock.AsyncMock(spec=conversation.Conversation)
+    response = types.ChatResponse(mock_stream(), conversation=mock_conv)
+
+    self.assertFalse(response._is_done)
+
+    await response.cancel()
+    mock_conv.cancel.assert_called_once()
+
+  async def test_cancel_completed_stream_is_noop(self):
+    """Verifies that cancel() is a safe no-op on a completed stream."""
+    async def mock_stream() -> AsyncIterator[types.StreamChunk]:
+      yield types.Text(step_index=1, text="hello")
+
+    mock_conv = mock.AsyncMock(spec=conversation.Conversation)
+    response = types.ChatResponse(mock_stream(), conversation=mock_conv)
+
+    # Resolve the stream to complete it
+    await response.resolve()
+    self.assertTrue(response._is_done)
+
+    await response.cancel()
+    mock_conv.cancel.assert_not_called()
+
+  async def test_stream_cancellation_sets_is_done(self):
+    """Verifies that if stream raises CancelledError, _is_done becomes True."""
+    async def mock_cancelled_stream() -> AsyncIterator[types.StreamChunk]:
+      yield types.Text(step_index=1, text="hello")
+      raise asyncio.CancelledError("Cancelled natively")
+
+    mock_conv = mock.AsyncMock(spec=conversation.Conversation)
+    response = types.ChatResponse(
+        mock_cancelled_stream(), conversation=mock_conv
+    )
+
+    chunks = []
+    with self.assertRaisesRegex(asyncio.CancelledError, "Cancelled natively"):
+      async for chunk in response.chunks:
+        chunks.append(chunk)
+
+    self.assertEqual(len(chunks), 1)
+    self.assertTrue(response._is_done)
+    self.assertIsInstance(response._stream_error, asyncio.CancelledError)
 
   def test_thought_chunk_validation(self):
     """Verifies that the Thought subclass validates Pydantic schemas correctly."""

@@ -445,6 +445,7 @@ class LocalConnection(connection.Connection):
     self._reader_task = asyncio.create_task(self._ws_reader_loop())
     self._current_turn_context = None
     self._cancelled = False
+    self._client_cancelled = False
     self._cancelled_message = ""
     self._is_idle = asyncio.Event()
     self._is_idle.set()
@@ -501,6 +502,7 @@ class LocalConnection(connection.Connection):
       prompt: The user prompt or content to send.
     """
     self._cancelled = False
+    self._client_cancelled = False
     self._is_idle.clear()
     self._parent_idle = False
     self._active_subagent_ids.clear()
@@ -549,6 +551,8 @@ class LocalConnection(connection.Connection):
         return
 
       if self._is_idle.is_set() and self._step_queue.empty():
+        if self._client_cancelled:
+          raise types.AntigravityCancelledError()
         return
 
       # The server sends a STATE_IDLE signal when the trajectory is finalized,
@@ -557,6 +561,8 @@ class LocalConnection(connection.Connection):
       # the exit condition and block on get() otherwise.
       while True:
         if self._is_idle.is_set() and self._step_queue.empty():
+          if self._client_cancelled:
+            raise types.AntigravityCancelledError()
           return
 
         step_obj = await self._step_queue.get()
@@ -564,6 +570,8 @@ class LocalConnection(connection.Connection):
         if step_obj is _IDLE_SENTINEL:
           continue
         if step_obj is None:
+          if self._client_cancelled:
+            raise types.AntigravityCancelledError()
           return
         if isinstance(step_obj, Exception):
           raise step_obj
@@ -735,6 +743,7 @@ class LocalConnection(connection.Connection):
 
   async def cancel(self) -> None:
     """Cancels the current turn."""
+    self._client_cancelled = True
     event = localharness_pb2.InputEvent(halt_request=True)
     await self._ws.send(json_format.MessageToJson(event))
 
